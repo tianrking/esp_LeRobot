@@ -121,7 +121,7 @@ void espNowTask(void *parameter) {
     
     // Follower 在 loop 中無需做事，完全由 OnDataRecv 回調驅動
     // Leader 也可在這裡執行其他任務
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
