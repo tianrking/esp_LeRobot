@@ -8,10 +8,10 @@
 #include "FashionStar_UartServoProtocol.h"
 #include "FashionStar_UartServo.h"
 
-// 舵機硬體配置
-#define SERVO_BAUDRATE 115200 // 使用更穩定的波特率
-#define SERVO_TX_PIN 2
-#define SERVO_RX_PIN 3
+// --- 舵機硬體配置 (依照您的要求修改) ---
+#define SERVO_BAUDRATE 1000000      // <-- 修改: 波特率設定為 1Mbps
+#define SERVO_TX_PIN D2             // <-- 修改: 使用 Arduino 板級引腳名 D2
+#define SERVO_RX_PIN D3             // <-- 修改: 使用 Arduino 板級引腳名 D3
 HardwareSerial servoSerial(1);
 FSUS_Protocol protocol(&servoSerial, SERVO_BAUDRATE);
 
