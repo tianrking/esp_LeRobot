@@ -9,9 +9,9 @@
 #include "FashionStar_UartServo.h"
 
 // 舵機硬體配置
-#define SERVO_BAUDRATE 115200 // 使用更穩定的波特率
-#define SERVO_TX_PIN 2
-#define SERVO_RX_PIN 3
+#define SERVO_BAUDRATE 1000000 // 使用更穩定的波特率
+#define SERVO_TX_PIN D2
+#define SERVO_RX_PIN D3
 HardwareSerial servoSerial(1);
 FSUS_Protocol protocol(&servoSerial, SERVO_BAUDRATE);
 
