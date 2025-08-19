@@ -67,6 +67,13 @@ void espNowTask(void *parameter) {
 
   // 1. 設置 Wi-Fi 為 STA 模式，這是 ESP-NOW 的最佳實踐
   WiFi.mode(WIFI_STA);
+
+  if (esp_wifi_set_max_tx_power(80) == ESP_OK) {
+    Serial.println("最大發射功率已設定為 +20dBm。");
+  } else {
+    Serial.println("設定最大發射功率失敗！");
+  }
+
   // 設置 Wi-Fi 頻道，Leader 和 Follower 必須在同一頻道
   if (esp_wifi_set_channel(currentConfig.channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
       Serial.println("設置 Wi-Fi 頻道失敗");
