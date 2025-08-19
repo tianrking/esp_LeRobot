@@ -49,7 +49,7 @@ void provisioningTask(void *parameter) {
     Serial.println("收到配置保存請求，準備立即切換模式...");
     Config& cfg = pConfigManager->getConfig();
     strcpy(cfg.role, server.arg("role").c_str());
-    strcpy(cfg.peer_macs_str, server.arg("peer_macs").c_str());
+    // strcpy(cfg.peer_macs_str, server.arg("peer_macs").c_str());
     cfg.channel = server.arg("channel").toInt();
     cfg.configured = true;
     pConfigManager->save();

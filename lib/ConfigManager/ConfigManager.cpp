@@ -5,14 +5,13 @@ const char* PREF_KEY_CONFIG = "config_data";
 
 ConfigManager::ConfigManager() {
   // 構造函數中設定初始默認值
-  strcpy(currentConfig.role, "Follower");
-  strcpy(currentConfig.peer_macs_str, "");
+  strcpy(currentConfig.role, "Follower"); // 默認角色為 Follower
   currentConfig.channel = 1;
   currentConfig.configured = false;
 }
 
 bool ConfigManager::load() {
-  preferences.begin(PREF_NAMESPACE, true); // true = 只讀模式
+  preferences.begin(PREF_NAMESPACE, true);
   if (preferences.getBytesLength(PREF_KEY_CONFIG) == sizeof(Config)) {
     preferences.getBytes(PREF_KEY_CONFIG, &currentConfig, sizeof(Config));
     preferences.end();
@@ -26,7 +25,7 @@ bool ConfigManager::load() {
 }
 
 void ConfigManager::save() {
-  preferences.begin(PREF_NAMESPACE, false); // false = 讀寫模式
+  preferences.begin(PREF_NAMESPACE, false);
   preferences.putBytes(PREF_KEY_CONFIG, &currentConfig, sizeof(Config));
   preferences.end();
   Serial.println("配置已成功保存到 NVS。");
