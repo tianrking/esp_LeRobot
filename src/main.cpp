@@ -81,70 +81,141 @@
 
 #include <Arduino.h>
 
-// =========== 硬體配置 ===========
-// 為 Serial1 和 Serial2 分配 GPIO 引腳
-// 這些是 ESP32-WROOM-32 DevKitC 上常用的安全引腳
-#define RX1_PIN 18
-#define TX1_PIN 19
-#define RX2_PIN 16
-#define TX2_PIN 17
+// 引入舵機驅動庫
+#include "FashionStar_UartServoProtocol.h"
+#include "FashionStar_UartServo.h"
+
+// =========== 舵機硬體配置 ===========
+#define SERVO_BAUDRATE 1000000
+const int NUM_SERVOS = 2;
+uint8_t servoIDs[] = {0, 1};
+
+// --- 總線1: Leader (輸入) ---
+#define LEADER_SERVO_TX_PIN 19
+#define LEADER_SERVO_RX_PIN 18
+
+// --- 總線2: Follower (輸出) ---
+#define FOLLOWER_SERVO_TX_PIN 17
+#define FOLLOWER_SERVO_RX_PIN 16
+
+// --- 為每個總線創建獨立的協議和舵機對象 ---
+FSUS_Protocol leaderProtocol(&Serial1, SERVO_BAUDRATE);
+FSUS_Servo* leaderServos[NUM_SERVOS];
+
+FSUS_Protocol followerProtocol(&Serial2, SERVO_BAUDRATE);
+FSUS_Servo* followerServos[NUM_SERVOS];
+
+// =========== FreeRTOS 與共享數據 ===========
+static float latest_angles[NUM_SERVOS];
+static SemaphoreHandle_t angleMutex;
+
+// --- 任務函數聲明 ---
+void readerTask(void *parameter);
+void writerTask(void *parameter);
+
 
 void setup() {
-  // 1. 初始化主串口 (UART0)，用於日誌和控制
+  // 1. 初始化主串口 (UART0)，用於日誌
   Serial.begin(115200);
-  delay(1000); // 等待串口穩定
-  Serial.println("\n--- ESP32 DevKit 三硬體串口並發測試 ---");
-  
-  // 2. 初始化串口1 (UART1)
-  Serial1.begin(115200, SERIAL_8N1, RX1_PIN, TX1_PIN);
-  Serial.println("  - Serial (UART0) on GPIO 1(TX)/3(RX) -> Ready (for Logging)");
-  Serial.printf("  - Serial1 (UART1) on GPIO %d(TX)/%d(RX) -> Ready\n", TX1_PIN, RX1_PIN);
+  delay(1000);
+  Serial.println("\n--- ESP32 DevKit 雙總線並行轉發測試 (最終優化版) ---");
 
-  // 3. 初始化串口2 (UART2)
-  Serial2.begin(115200, SERIAL_8N1, RX2_PIN, TX2_PIN);
-  Serial.printf("  - Serial2 (UART2) on GPIO %d(TX)/%d(RX) -> Ready\n", TX2_PIN, RX2_PIN);
+  // 2. 初始化 Leader (輸入) 總線 (UART1)
+  Serial1.begin(SERVO_BAUDRATE, SERIAL_8N1, LEADER_SERVO_RX_PIN, LEADER_SERVO_TX_PIN);
+  for (int i = 0; i < NUM_SERVOS; i++) {
+      leaderServos[i] = new FSUS_Servo(servoIDs[i], &leaderProtocol);
+      leaderServos[i]->init();
+  }
 
-  Serial.println("\n測試方法:");
-  Serial.println("  1. 使用 USB-to-Serial 適配器連接到 Serial1 或 Serial2 的引腳。");
-  Serial.println("  2. 在對應的串口助手中發送任何字符，設備會將其回顯。");
-  Serial.println("  3. 在本窗口輸入 '1' 或 '2'，可以讓設備主動從 Serial1 或 Serial2 發送測試訊息。");
-  Serial.println("----------------------------------------------------");
+  // 3. 初始化 Follower (輸出) 總線 (UART2)
+  Serial2.begin(SERVO_BAUDRATE, SERIAL_8N1, FOLLOWER_SERVO_RX_PIN, FOLLOWER_SERVO_TX_PIN);
+  for (int i = 0; i < NUM_SERVOS; i++) {
+      followerServos[i] = new FSUS_Servo(servoIDs[i], &followerProtocol);
+      followerServos[i]->init();
+  }
+
+  // 4. 創建互斥鎖
+  angleMutex = xSemaphoreCreateMutex();
+  if (angleMutex == NULL) {
+    Serial.println("創建 Mutex 失敗! 系統暫停。");
+    while(1);
+  }
+
+  // 5. 創建並啟動兩個任務
+  xTaskCreatePinnedToCore(
+      readerTask, "Reader Task", 8192, NULL, 2, NULL, 0);
+
+  xTaskCreatePinnedToCore(
+      writerTask, "Writer Task", 8192, NULL, 1, NULL, 1);
+
+  Serial.println("初始化完成，讀寫任務已在雙核上並行啟動...");
+  Serial.println("------------------------------------------");
 }
 
-void loop() {
-  static unsigned long lastHeartbeatTime = 0;
-
-  // 任務1: 處理來自 USB 主串口的控制指令
-  if (Serial.available()) {
-    char c = Serial.read();
-    if (c == '1') {
-      String msg = "Hello from Serial1!";
-      Serial1.println(msg);
-      Serial.printf("[Control] Sent '%s' via Serial1\n", msg.c_str());
-    } else if (c == '2') {
-      String msg = "Hello from Serial2!";
-      Serial2.println(msg);
-      Serial.printf("[Control] Sent '%s' via Serial2\n", msg.c_str());
+/**
+ * @brief 任務一：高頻讀取 Leader 舵機角度 (增量更新邏輯)
+ */
+void readerTask(void *parameter) {
+  const int DELAY_BETWEEN_SERVO_QUERIES_MS = 2;
+  
+  for (;;) {
+    // 從總線1逐個讀取舵機的角度
+    for (int i = 0; i < NUM_SERVOS; i++) {
+      // 1. 查詢單個舵機
+      float angle = leaderServos[i]->queryAngle();
+      
+      // 2. 驗證數據
+      if (angle > -185.0 && angle < 185.0) {
+        // 3. (關鍵修改) 獲取鎖，並立刻更新共享緩衝區中的這一個角度值
+        if (xSemaphoreTake(angleMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          latest_angles[i] = angle;
+          xSemaphoreGive(angleMutex);
+        }
+      }
+      
+      // 4. 為總線穩定而延遲
+      vTaskDelay(pdMS_TO_TICKS(DELAY_BETWEEN_SERVO_QUERIES_MS));
     }
   }
+}
 
-  // 任務2: 回顯來自 Serial1 的所有數據
-  if (Serial1.available()) {
-    char c = Serial1.read();
-    Serial1.write(c); // Echo back
-    Serial.printf("[Serial1 RX] Received: %c\n", c);
-  }
+/**
+ * @brief 任務二：高頻將最新角度寫入 Follower 舵機
+ */
+void writerTask(void *parameter) {
+  const int CONTROL_UPDATE_INTERVAL_MS = 20; // 以 50Hz 的頻率更新 Follower
 
-  // 任務3: 回顯來自 Serial2 的所有數據
-  if (Serial2.available()) {
-    char c = Serial2.read();
-    Serial2.write(c); // Echo back
-    Serial.printf("[Serial2 RX] Received: %c\n", c);
-  }
+  for (;;) {
+    float angles_to_write[NUM_SERVOS];
 
-  // 任務4: 在主串口打印心跳，證明系統沒有崩潰
-  if (millis() - lastHeartbeatTime > 2000) {
-    lastHeartbeatTime = millis();
-    Serial.println("[Heartbeat] System is running...");
+    // 獲取鎖，從共享緩衝區複製一份最新的、可能被增量更新過的數據
+    if (xSemaphoreTake(angleMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      memcpy(angles_to_write, latest_angles, sizeof(angles_to_write));
+      xSemaphoreGive(angleMutex);
+    }
+    
+    // 將角度高速下發到總線2
+    for (int i = 0; i < NUM_SERVOS; i++) {
+      followerServos[i]->setRawAngle(angles_to_write[i]);
+    }
+    
+    // (可選) 降低頻率打印日誌
+    static unsigned long lastPrintTime = 0;
+    if (millis() - lastPrintTime > 100) {
+        lastPrintTime = millis();
+        String output_line = "Angles: ";
+        for(int i=0; i<NUM_SERVOS; ++i){
+            output_line += "[ID" + String(servoIDs[i]) + ":" + String(angles_to_write[i], 1) + "] ";
+        }
+        Serial.println(output_line);
+    }
+
+    // 控制寫入的整體頻率
+    vTaskDelay(pdMS_TO_TICKS(CONTROL_UPDATE_INTERVAL_MS));
   }
+}
+
+
+void loop() {
+  vTaskDelete(NULL);
 }
